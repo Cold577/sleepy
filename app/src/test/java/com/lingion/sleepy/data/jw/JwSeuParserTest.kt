@@ -166,4 +166,75 @@ class JwSeuParserTest {
         val courses = JwSeuParser("""{"data":{"nested":1}}""").generateCourseList()
         assertTrue(courses.isEmpty())
     }
+
+    @Test
+    fun `v2 wrapped format parses correctly`() {
+        // v2 WebView fetch 返回的包装格式: { "datas": { "xskcb": { "rows": [...] } } }
+        val v2Response = """
+            {
+              "datas": {
+                "xskcb": {
+                  "rows": [
+                    {
+                      "KCM": "数据结构",
+                      "SKJS": "张老师",
+                      "JASMC": "教一楼301",
+                      "SKXQ": 3,
+                      "KSJC": 3,
+                      "JSJC": 4,
+                      "ZCMC": "1-16周"
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+        val courses = JwSeuParser(v2Response).generateCourseList()
+        assertEquals(1, courses.size)
+        assertEquals("数据结构", courses[0].name)
+        assertEquals("张老师", courses[0].teacher)
+        assertEquals("教一楼301", courses[0].room)
+        assertEquals(3, courses[0].day)
+        assertEquals(3, courses[0].startNode)
+        assertEquals(4, courses[0].endNode)
+    }
+
+    @Test
+    fun `v2 bitmap takes precedence over incomplete week label`() {
+        val source = """{"datas":{"xskcb":{"rows":[{"KCM":"高等数学","SKXQ":2,"KSJC":1,"JSJC":2,"ZCMC":"1-16周","SKZC":"1010100000000000"}]}}}"""
+        val courses = JwSeuParser(source).generateCourseList()
+        assertEquals(1, courses.size)
+        assertEquals(1, courses[0].startWeek)
+        assertEquals(5, courses[0].endWeek)
+        assertEquals(1, courses[0].type)
+    }
+
+    @Test
+    fun `v2 bitmap preserves holes as separate week ranges`() {
+        val source = """{"datas":{"xskcb":{"rows":[{"KCM":"实验课","SKXQ":4,"KSJC":3,"JSJC":4,"SKZC":"110110"}]}}}"""
+        val courses = JwSeuParser(source).generateCourseList()
+        assertEquals(2, courses.size)
+        assertEquals(listOf(1 to 2, 4 to 5), courses.map { it.startWeek to it.endWeek })
+    }
+
+    @Test
+    fun `v2 malformed wrapper safely returns no courses`() {
+        assertTrue(JwSeuParser("""{"datas":[],"data":{"nested":1}}""").generateCourseList().isEmpty())
+        assertTrue(JwSeuParser("""{"datas":{"xskcb":null}}""").generateCourseList().isEmpty())
+    }
+
+    @Test
+    fun `v2 valid all zero bitmap overrides conflicting week label`() {
+        val source = """{"datas":{"xskcb":{"rows":[{"KCM":"停课","SKXQ":2,"KSJC":1,"JSJC":2,"ZCMC":"1-16周","SKZC":"0000000000000000"}]}}}"""
+        assertTrue(JwSeuParser(source).generateCourseList().isEmpty())
+    }
+
+    @Test
+    fun `v2 invalid bitmap falls back to week label without accepting mixed characters`() {
+        val source = """{"datas":{"xskcb":{"rows":[{"KCM":"物理","SKXQ":2,"KSJC":1,"JSJC":2,"ZCMC":"2-3周","SKZC":"1x01"}]}}}"""
+        val courses = JwSeuParser(source).generateCourseList()
+        assertEquals(1, courses.size)
+        assertEquals(2, courses[0].startWeek)
+        assertEquals(3, courses[0].endWeek)
+    }
 }
