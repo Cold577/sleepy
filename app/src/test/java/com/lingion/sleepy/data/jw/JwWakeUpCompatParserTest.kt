@@ -1,6 +1,8 @@
 package com.lingion.sleepy.data.jw
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -109,6 +111,29 @@ class JwWakeUpCompatParserTest {
         assertEquals(1, courses[0].type)
         assertEquals("教2-301", courses[0].room)
         assertEquals("钱老师", courses[0].teacher)
+    }
+
+    // New Kingosoft source-shaped HTML layouts are tested in JwKingoSuperSourceShapeTest.
+
+    @Test
+    fun `kingo super TaskActivity chain still works regression`() {
+        // 阶段 2 回归: 3 链失败时仍走老 kingo TaskActivity 路径
+        val source = """
+            <html><body><script>
+            var activity = null;
+            activity = new TaskActivity('线性代数','钱老师','教2-301','11111111111111111111');
+            index = 4 * unitCount + 3;
+            activity.index = index;
+            table0.marshalTable();
+            </script></body></html>
+        """.trimIndent()
+
+        val courses = JwKingoParser(source).generateCourseList()
+
+        assertEquals(1, courses.size)
+        assertEquals("线性代数", courses.single().name)
+        assertEquals("钱老师", courses.single().teacher)
+        assertEquals(5, courses.single().day)
     }
 
     @Test

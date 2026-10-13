@@ -155,6 +155,116 @@ private object WakeUpCompat {
         }
     }
 
+    /** New Kingosoft HTML layouts, in upstream OpenWakeUp order: #mytable, format two, #kbDiv. */
+    fun parseKingoSuperHtml(source: String, errorList: MutableList<String>? = null): List<JwCourse> {
+        val errors = errorList ?: mutableListOf()
+        // Jsoup handles a head-less fragment and tables concatenated from same-origin frames.
+        val documents = listOf(Jsoup.parse(source))
+        fun nodes(text: String): Pair<Int, Int>? {
+            val match = Regex("^\\s*(\\d{1,2})(?:\\s*[-~至]\\s*(\\d{1,2}))?\\s*(?:节)?\\s*$").matchEntire(text) ?: return null
+            val first = match.groupValues[1].toIntOrNull() ?: return null
+            val last = match.groupValues[2].takeIf(String::isNotBlank)?.toIntOrNull() ?: first
+            return if (first in 1..30 && last in first..30) first to last else null
+        }
+        fun emit(name: String, teacher: String, room: String, day: Int, nodeText: String, weeksText: String): List<JwCourse> {
+            val (start, end) = nodes(nodeText) ?: return emptyList()
+            if (name.isBlank() || day !in 1..7) return emptyList()
+            // Keep this source's week grammar strict; the generic compatibility parser is deliberately permissive.
+            val weekPattern = Regex("""^(\d{1,2})(?:[-~至](\d{1,2}))?周?(?:\(([单双])\)|([单双])周?)?$""")
+            val weeks = weeksText.split(',', '，', ';', '；').mapNotNull { raw ->
+                val match = weekPattern.matchEntire(raw.filterNot(Char::isWhitespace)) ?: return@mapNotNull null
+                val first = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                val last = match.groupValues[2].takeIf(String::isNotBlank)?.toIntOrNull() ?: first
+                if (first !in 1..60 || last !in first..60) return@mapNotNull null
+                val parity = match.groupValues[3].ifBlank { match.groupValues[4] }
+                Triple(first, last, when (parity) { "单" -> 1; "双" -> 2; else -> 0 })
+            }
+            return weeks
+                .map { (from, to, type) -> JwCourse(name, room, teacher, day, start, end, from, to, type) }
+        }
+
+        val myTable = buildList {
+            for (doc in documents) for (table in doc.select("#mytable")) {
+                for (row in table.select("tr:not(.H)")) for ((column, cell) in row.select("td").withIndex()) {
+                    val day = column + 1
+                    if (day !in 1..7) continue
+                    var compact = false
+                    for (block in cell.children().filter { it.tagName() == "div" }) {
+                        if (block.hasClass("div1")) {
+                            compact = block.html().contains("xkinfo") && block.html().contains("&nbsp;")
+                            continue
+                        }
+                        val html = if (compact) block.html().replace(Regex("(?i)(?:&nbsp;)+"), " ") else block.html()
+                        val lines = html.split(Regex("(?i)<br\\s*/?>")).map { Jsoup.parse(it).text().trim() }
+                        val detail = lines.getOrNull(if (compact) 1 else 2) ?: continue
+                        val name = lines.firstOrNull().orEmpty()
+                        val teacher = if (compact) detail.substringBefore(' ').trim() else lines.getOrNull(1).orEmpty()
+                        val room = lines.getOrNull(if (compact) 2 else 3).orEmpty()
+                        val timing = if (compact) detail.substringAfter(' ', "") else detail
+                        val weekText = timing.substringBefore('[').trim()
+                        val nodeText = timing.substringAfter('[', "").substringBefore(']').trim()
+                        if (weekText.isNotEmpty() && nodeText.isNotEmpty()) addAll(emit(name, teacher, room, day, nodeText, weekText))
+                    }
+                }
+            }
+        }
+        if (myTable.isNotEmpty()) return myTable
+        errors += "chain1 #mytable: no valid weekday cell"
+
+        val formatTwo = buildList {
+            for (doc in documents) for (table in doc.select("table")) {
+                val headers = table.selectFirst("thead tr")?.select("th,td")?.map { it.text().trim() } ?: continue
+                val nameIndex = headers.indexOfFirst { it == "课程" }
+                val nodeIndex = headers.indexOfFirst { it.contains("节次") }
+                if (nameIndex < 0 || nodeIndex < 0) continue
+                val teacherIndex = headers.indexOfFirst { it.contains("教师") }
+                val roomIndex = headers.indexOfFirst { it.contains("地点") }
+                val weeksIndex = headers.indexOfFirst { it.contains("周次") }
+                val parityIndex = headers.indexOfFirst { it.contains("单双周") }
+                for (row in table.select("tbody tr")) {
+                    val cells = row.children()
+                    val name = cells.getOrNull(nameIndex)?.text()?.substringAfter(']')?.trim().orEmpty()
+                    val timing = cells.getOrNull(nodeIndex)?.text()?.trim().orEmpty()
+                    val day = extractDay(timing.substringBefore('[')) ?: continue
+                    val nodeText = timing.substringAfter('[', "").substringBefore(']')
+                    val weeks = if (weeksIndex >= 0) cells.getOrNull(weeksIndex)?.text().orEmpty() else timing.substringAfter('(', "").substringBefore('周')
+                    val parity = cells.getOrNull(parityIndex)?.text().orEmpty()
+                    val typedWeeks = weeks.replace('，', ',').split(',').joinToString(",") { part ->
+                        val t = part.trim()
+                        if (t.contains('单') || t.contains('双') || parity.isBlank()) t else "$t$parity"
+                    }
+                    addAll(emit(name, cells.getOrNull(teacherIndex)?.text()?.substringAfter(']').orEmpty(),
+                        cells.getOrNull(roomIndex)?.text().orEmpty(), day, nodeText, typedWeeks))
+                }
+            }
+        }
+        if (formatTwo.isNotEmpty()) return formatTwo
+        errors += "chain2 thead: no valid course row"
+
+        val kbDiv = buildList {
+            for (doc in documents) for (table in doc.select("#kbDiv")) {
+                val body = table.select("tbody").lastOrNull() ?: continue
+                for ((rowIndex, row) in body.select("tr").withIndex()) {
+                    val allCells = row.select("td")
+                    if (allCells.size < 7) continue
+                    val cells = allCells.takeLast(7)
+                    for ((dayIndex, cell) in cells.withIndex()) {
+                        val text = cell.text().trim()
+                        val name = text.substringBefore('(').trim()
+                        val detail = text.substringAfter('(', "").substringBeforeLast(')', "")
+                        val parts = detail.split(Regex("\\s+")).filter(String::isNotBlank)
+                        if (name.isBlank() || parts.isEmpty()) continue
+                        addAll(emit(name, "", parts.getOrNull(1).orEmpty(), dayIndex + 1,
+                            (rowIndex + 1).toString(), parts[0]))
+                    }
+                }
+            }
+        }
+        if (kbDiv.isNotEmpty()) return kbDiv
+        errors += "chain3 #kbDiv: no valid timetable cell"
+        return emptyList()
+    }
+
     /** Kingo TaskActivity JS grid: "activity = new TaskActivity(name,teacher,room,weeksBinary)"; index=a*unitCount+b → day=a+1, node=b+1; '1'@p → week p+1, 连续段合并成组, 全奇→单周/全偶→双周. */
     fun parseKingoTaskActivity(source: String): List<JwCourse> {
         if (!source.contains("TaskActivity")) return emptyList()
@@ -573,8 +683,39 @@ abstract class WakeUpMarkerParser(source: String, private val markers: Set<Strin
     override fun confidence(): Int = WakeUpCompat.confidence(source, markers)
     override fun matchedFeatures(): List<String> = WakeUpCompat.features(source, markers)
 }
-class JwKingoParser(source: String) : WakeUpMarkerParser(source, setOf("kingosoft", "courseTableForStd", "courseTableStudent", "new TaskActivity")) {
-    override fun generateCourseList() = WakeUpCompat.parseKingoTaskActivity(source).ifEmpty { super.generateCourseList() }
+class JwKingoParser(source: String) : WakeUpMarkerParser(source, setOf("kingosoft", "courseTableForStd", "courseTableStudent", "new TaskActivity", "CourseTableForStd", "ScheduleTaskBean", "xkinfo", "kbDiv")) {
+    override fun confidence(): Int = when {
+        // td.td is the positive-selection legacy ZX grid; its first td can be a section gutter.
+        Jsoup.parse(source).selectFirst("table#mytable td.td") != null -> 0
+        source.contains("id=\"kbDiv\"") || source.contains("id='kbDiv'") -> 95
+        source.contains("<thead") && source.contains("课程") && source.contains("节次") &&
+            Regex("(?:星期|周)[一二三四五六日天1-7]").containsMatchIn(source) -> 93
+        source.contains("id=\"mytable\"") || source.contains("id='mytable'") -> 91
+        else -> super.confidence()
+    }
+    override fun generateCourseList(): List<JwCourse> {
+        // A declared KINGO_NEW school may still serve the older positive-selection grid.
+        // Delegate its td.td cells so the optional section gutter and sparse weeks keep ZX semantics.
+        if (Jsoup.parse(source).selectFirst("table#mytable td.td") != null) {
+            val legacy = JwKingoZxParser(source).generateCourseList()
+            if (legacy.isNotEmpty()) return legacy
+        }
+        // Kingo Super 2026-10 — 内部叠加 HTML 3 链降级 (不新建独立类, 与 TYPE_KINGO_NEW 共用)
+        // 阶段 1: HTML 3 链降级 (新青果 super 主入口) — 见 parseKingoSuperHtml
+        val errors = mutableListOf<String>()
+        val superHtml = WakeUpCompat.parseKingoSuperHtml(source, errors)
+        if (superHtml.isNotEmpty()) return superHtml
+        // 阶段 2: TaskActivity JS grid (现有路径, 兼容老版本 kingo 教务)
+        val taskActivity = WakeUpCompat.parseKingoTaskActivity(source)
+        if (taskActivity.isNotEmpty()) return taskActivity
+        // 阶段 3: 父类 WakeUpMarkerParser (markers 命中回退)
+        val parent = super.generateCourseList()
+        if (parent.isNotEmpty()) return parent
+        // 全失败 — INV-ERROR-AGGREGATE: 错误列表聚合抛出
+        errors += "TaskActivity JS grid 链 (chain1/老 kingo) 解析为空"
+        errors += "父类 WakeUpMarkerParser 链 (markers 命中回退) 解析为空"
+        throw IllegalStateException("JwKingoParser (新青果 super 2026-10) 全链降级失败:\n" + errors.joinToString("\n"))
+    }
 }
 class JwJzParser(source: String) : WakeUpMarkerParser(source, setOf("courseTableForStd", "courseTableStudent", "wisedu", "JinZhi"))
 class JwSouthSoftParser(source: String) : WakeUpMarkerParser(source, setOf("studentTableVms", "studentTableVm", "activities", "south_soft")) {
