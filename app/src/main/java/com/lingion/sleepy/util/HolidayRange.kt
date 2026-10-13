@@ -147,6 +147,28 @@ object HolidayRangeOps {
             return hit.targetDate.dayOfWeek.value
         }
 
+        /** Reverse one-step lookup: target uses the original source date; moved-out source is empty. */
+        fun courseDateForDate(date: LocalDate, transfers: List<HolidayTransferEntry>): LocalDate? {
+            transfers.lastOrNull { it.targetDate == date }?.let { return it.sourceDate }
+            if (transfers.any { it.sourceDate == date }) return null
+            return date
+        }
+
+        fun courseDayForDate(date: LocalDate, transfers: List<HolidayTransferEntry>): Int? =
+            courseDateForDate(date, transfers)?.dayOfWeek?.value
+
+        /** Content follows the source date; display and alarm time keep the destination date. */
+        fun coursesForDate(
+            date: LocalDate, startDate: String, maxWeek: Int,
+            courses: List<com.lingion.sleepy.data.entity.CourseEntity>,
+            transfers: List<HolidayTransferEntry>
+        ): List<com.lingion.sleepy.data.entity.CourseEntity> {
+            val source = courseDateForDate(date, transfers) ?: return emptyList()
+            if (DateUtils.semesterStatus(startDate, maxWeek, source) != DateUtils.SemesterStatus.IN_RANGE) return emptyList()
+            val week = DateUtils.currentWeek(startDate, source)
+            return courses.filter { it.day == source.dayOfWeek.value && it.inWeek(week) }
+        }
+
         /**
          * 渲染期 daySwap 应用层(issue#145 抽离可测, 修复前 daySwap 只搬不删,
          * 补班日那列原课未屏蔽, 与调过去的课在同一列叠加显示)。

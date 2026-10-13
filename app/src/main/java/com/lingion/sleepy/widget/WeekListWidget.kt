@@ -184,9 +184,8 @@ open class WeekListWidgetReceiver : AppWidgetProvider() {
                         // 学期前: 钳制周=1, 第 1 周课照常显示(预习); 学期后: 课程清空, renderer 画状态行
                         val days = (1..7).map { dayOfWeek ->
                             val date = source.dateFor(dayOfWeek)
-                            val effectiveDay = HolidayTransferHelper.effectiveDayOfWeek(context, table.id, date)
-                            val visible = if (status == DateUtils.SemesterStatus.AFTER_END) emptyList() else
-                                source.coursesFor(effectiveDay, week)
+                            // 取课走反向查: 补班日=sourceDate 的课, 放假日=null(无课)
+                            val visible = source.coursesOn(date, previewBeforeStart = true)
                             DayData(
                                 date = date,
                                 dayOfWeek = dayOfWeek,
@@ -203,7 +202,7 @@ open class WeekListWidgetReceiver : AppWidgetProvider() {
                                 source.display.status == com.lingion.sleepy.util.WeekDisplayStatus.NEAREST_BUSY_DAY
                             }
                         )
-                        WeekData(days = days, hasTable = true, isDark = isDark, themeKey = themeKey, semesterStatus = status, compactWindow = compactWindow, weekDisplayStatus = source.display.status)
+                        WeekData(days = days, hasTable = true, isDark = isDark, themeKey = themeKey, semesterStatus = if (days.any { it.courses.isNotEmpty() } && status == DateUtils.SemesterStatus.AFTER_END) DateUtils.SemesterStatus.IN_RANGE else status, compactWindow = compactWindow, weekDisplayStatus = source.display.status)
                     }
                 }
             } catch (_: Throwable) {
