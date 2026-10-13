@@ -106,36 +106,14 @@ object SystemCalendarManager {
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
 
+    private val localCalendarFallback = LocalCalendarFallback()
+
+    suspend fun ensureLocalCalendar(context: Context): SystemCalendarInfo? = withContext(Dispatchers.IO) {
+        localCalendarFallback.ensure(AndroidLocalCalendarStore(context))
+    }
+
     suspend fun writableCalendars(context: Context): List<SystemCalendarInfo> = withContext(Dispatchers.IO) {
-        if (!hasCalendarPermissions(context)) return@withContext emptyList()
-        val projection = arrayOf(
-            CalendarContract.Calendars._ID,
-            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-            CalendarContract.Calendars.ACCOUNT_NAME,
-            CalendarContract.Calendars.ACCOUNT_TYPE,
-            CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
-            CalendarContract.Calendars.VISIBLE
-        )
-        val result = mutableListOf<SystemCalendarInfo>()
-        runCatching {
-            context.contentResolver.query(
-                CalendarContract.Calendars.CONTENT_URI,
-                projection,
-                "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ? AND ${CalendarContract.Calendars.VISIBLE} = 1",
-                arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString()),
-                "${CalendarContract.Calendars.IS_PRIMARY} DESC, ${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME} COLLATE NOCASE"
-            )?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    result += SystemCalendarInfo(
-                        id = cursor.getLong(0),
-                        displayName = cursor.getString(1).orEmpty().ifBlank { cursor.getString(2).orEmpty() },
-                        accountName = cursor.getString(2).orEmpty(),
-                        accountType = cursor.getString(3).orEmpty()
-                    )
-                }
-            }
-        }
-        result
+        localCalendarFallback.writable(AndroidLocalCalendarStore(context))
     }
 
     fun buildPreview(
