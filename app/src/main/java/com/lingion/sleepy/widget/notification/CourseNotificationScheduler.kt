@@ -707,8 +707,10 @@ private suspend fun sendScheduleSummary(
         return
     }
 
-    posts.forEach { (table, courses) ->
-        var title = context.getString(
+    // 单表: 保持原有格式; 多表: 合并为一条紧凑列表通知
+    if (posts.size == 1) {
+        val (table, courses) = posts.single()
+        val title = context.getString(
             if (isTomorrowPreview) R.string.notif_tomorrow_title else R.string.notif_daily_title,
             dayOfMonth,
             courses.size
@@ -716,24 +718,36 @@ private suspend fun sendScheduleSummary(
         val first = courses.first()
         val firstTime = getCourseStartTime(first, table)
         val firstRoom = first.room.ifBlank { context.getString(R.string.notif_room_unknown) }
-        var text = context.getString(R.string.notif_daily_text_first, first.courseName, firstTime, firstRoom)
-        // 多表同时提醒时用课表名区分来源
-        if (activeTables.size > 1) {
-            title = "${table.name} · $title"
-            text = "${table.name} · $text"
-        }
-        val baseId = if (posts.size == 1 && activeTables.size <= 1) {
-            if (isTomorrowPreview) {
-                CourseNotificationScheduler.NOTIFY_TOMORROW_DAILY
-            } else {
-                CourseNotificationScheduler.NOTIFY_DAILY
-            }
-        } else {
-            (CourseNotificationScheduler.NOTIFY_TABLE_SUMMARY_BASE + table.id * 2 +
-                if (isTomorrowPreview) 1L else 0L).toInt()
-        }
-        notify(baseId, build(title, text))
+        val text = context.getString(R.string.notif_daily_text_first, first.courseName, firstTime, firstRoom)
+        notify(
+            if (isTomorrowPreview) CourseNotificationScheduler.NOTIFY_TOMORROW_DAILY
+            else CourseNotificationScheduler.NOTIFY_DAILY,
+            build(title, text)
+        )
+        return
     }
+
+    // 多表合并: 标题显示总课程数, 正文为紧凑列表
+    val totalCourses = posts.sumOf { it.courses.size }
+    val title = context.getString(
+        if (isTomorrowPreview) R.string.notif_tomorrow_title else R.string.notif_daily_title,
+        dayOfMonth,
+        totalCourses
+    )
+    val multiTable = activeTables.size > 1
+    val text = posts.flatMap { (table, courses) ->
+        courses.map { c ->
+            val time = getCourseStartTime(c, table)
+            val room = c.room.ifBlank { context.getString(R.string.notif_room_unknown) }
+            if (multiTable) "[${table.name}] $time ${c.courseName} @ $room"
+            else "$time ${c.courseName} @ $room"
+        }
+    }.joinToString("\n")
+    notify(
+        if (isTomorrowPreview) CourseNotificationScheduler.NOTIFY_TOMORROW_DAILY
+        else CourseNotificationScheduler.NOTIFY_DAILY,
+        build(title, text)
+    )
 }
 
 /**
