@@ -109,9 +109,6 @@ class CourseNotificationScheduler private constructor(
         const val NOTIFY_DAILY = 1001
         const val NOTIFY_TOMORROW_DAILY = 1002
         const val NOTIFY_BEFORE_CLASS_BASE = 2000 // + courseId offset
-        // 每表独立提醒: 多表开启时每日/明日摘要按 tableId 分配独立 ID (base + tableId*2 (+1 明日))
-        const val NOTIFY_TABLE_SUMMARY_BASE = 5000
-
         // 进程级: 各 Receiver 会 new 自己的实例, 锁必须跨实例; Mutex 不可重入, 持锁路径只调 *Locked
         private val scheduleLock = Mutex()
     }
