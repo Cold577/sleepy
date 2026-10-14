@@ -120,6 +120,7 @@ class CourseNotificationScheduler private constructor(
         ensureNotificationChannels(context)
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             val prefs = context.applicationContext
+            cleanupLegacyDailySummaryNotifications(prefs)
             val beforeClassOn = scheduleLock.withLock {
                 cancelRecurringLocked()
                 if (!AppPrefs.isReminderEnabled(prefs)) {
@@ -634,6 +635,7 @@ private suspend fun sendScheduleSummary(
     isTomorrowPreview: Boolean
 ) {
     val app = context.applicationContext
+    cleanupLegacyDailySummaryNotifications(app)
     val dayOfMonth = targetDate.dayOfMonth
 
     // 每表独立提醒: 聚合所有开启提醒的课表; 若全部被节假日策略豁免则整体静默
@@ -649,8 +651,6 @@ private suspend fun sendScheduleSummary(
     }
     if (enabledTables.isNotEmpty() && activeTables.isEmpty()) return
 
-    data class TableSummary(val table: TimeTableEntity, val courses: List<CourseEntity>)
-
     val summaries = activeTables.map { table ->
         // 取课走反向查: 补班日=sourceDate 的课, 放假日=null(无课)
         val sourceDate = com.lingion.sleepy.widget.HolidayTransferHelper.courseDateForDate(app, table.id, targetDate)
@@ -662,11 +662,10 @@ private suspend fun sendScheduleSummary(
         } else {
             repo.getCoursesByDayOnce(table.id, sourceDate.dayOfWeek.value)
                 .filter { it.inWeek(week) }
-                .sortedBy { it.startNode }
         }
-        TableSummary(table, courses)
+        DailyTableCourses(table, courses)
     }
-    val posts = summaries.filter { it.courses.isNotEmpty() }
+    val summary = buildDailyScheduleSummary(summaries)
 
     val permissionGranted = ContextCompat.checkSelfPermission(
         context, Manifest.permission.POST_NOTIFICATIONS
@@ -687,7 +686,7 @@ private suspend fun sendScheduleSummary(
             .setAutoCancel(true)
             .build()
 
-    if (posts.isEmpty()) {
+    if (summary.entries.isEmpty()) {
         val title = context.getString(
             if (isTomorrowPreview) R.string.notif_tomorrow_title_no_course else R.string.notif_daily_title_no_course,
             dayOfMonth
@@ -708,15 +707,15 @@ private suspend fun sendScheduleSummary(
     }
 
     // 单表: 保持原有格式; 多表: 合并为一条紧凑列表通知
-    if (posts.size == 1) {
-        val (table, courses) = posts.single()
+    if (!summary.isMultiTable) {
         val title = context.getString(
             if (isTomorrowPreview) R.string.notif_tomorrow_title else R.string.notif_daily_title,
             dayOfMonth,
-            courses.size
+            summary.entries.size
         )
-        val first = courses.first()
-        val firstTime = getCourseStartTime(first, table)
+        val entry = summary.entries.first()
+        val first = entry.course
+        val firstTime = entry.startTimeText
         val firstRoom = first.room.ifBlank { context.getString(R.string.notif_room_unknown) }
         val text = context.getString(R.string.notif_daily_text_first, first.courseName, firstTime, firstRoom)
         notify(
@@ -728,21 +727,12 @@ private suspend fun sendScheduleSummary(
     }
 
     // 多表合并: 标题显示总课程数, 正文为紧凑列表
-    val totalCourses = posts.sumOf { it.courses.size }
     val title = context.getString(
         if (isTomorrowPreview) R.string.notif_tomorrow_title else R.string.notif_daily_title,
         dayOfMonth,
-        totalCourses
+        summary.entries.size
     )
-    val multiTable = activeTables.size > 1
-    val text = posts.flatMap { (table, courses) ->
-        courses.map { c ->
-            val time = getCourseStartTime(c, table)
-            val room = c.room.ifBlank { context.getString(R.string.notif_room_unknown) }
-            if (multiTable) "[${table.name}] $time ${c.courseName} @ $room"
-            else "$time ${c.courseName} @ $room"
-        }
-    }.joinToString("\n")
+    val text = summary.compactText(context.getString(R.string.notif_room_unknown))
     notify(
         if (isTomorrowPreview) CourseNotificationScheduler.NOTIFY_TOMORROW_DAILY
         else CourseNotificationScheduler.NOTIFY_DAILY,
@@ -914,10 +904,3 @@ private fun openAppIntent(context: Context): PendingIntent =
         context, 0, Intent(context, MainActivity::class.java),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
-
-private fun getCourseStartTime(course: CourseEntity, table: TimeTableEntity): String {
-    if (course.ownTime && course.startTime.isNotBlank()) return course.startTime
-    val nodes = TimeTableUtils.parseNodes(table.timeJson)
-    val node = nodes.find { it.node == course.startNode } ?: return ""
-    return String.format("%02d:%02d", node.start.hour, node.start.minute)
-}
